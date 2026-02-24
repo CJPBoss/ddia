@@ -7,14 +7,24 @@
 2. {{< figure ... >}} (无 src) → 移除（通常用于代码示例）
 """
 
+import os
 import re
 import sys
-import os
 from pathlib import Path
 
-def convert_figure_shortcode(text):
+FIGURE_SHORTCODE_RE = re.compile(r"\{\{<\s*figure\b(.*?)>\}\}", re.DOTALL)
+ATTR_RE = re.compile(r'([\w-]+)="([^"]*)"')
+ABS_IMAGE_RE = re.compile(r'!\[([^\]]*)\]\(/(?!static/)([^)]+)\)')
+
+
+def _escape_alt_text(text):
+    """Escape `]` in alt text to avoid breaking Markdown image syntax."""
+    return text.replace("]", r"\]")
+
+
+def convert_markdown(text):
     """
-    转换 Hugo figure shortcode 为 Markdown 图片语法
+    转换 Hugo figure shortcode 和绝对路径图片引用。
 
     Args:
         text: Markdown 文本内容
@@ -22,40 +32,27 @@ def convert_figure_shortcode(text):
     Returns:
         转换后的文本
     """
+    def replace_figure_shortcode(match):
+        attrs_text = match.group(1)
+        attrs = dict(ATTR_RE.findall(attrs_text))
+        src = attrs.get("src")
 
-    # 先处理有 caption 的 figure shortcode
-    # 例如: {{< figure src="/fig/ddia_0302.png" caption="图 3-2. xxx" >}}
-    pattern_with_caption = r'\{\{< figure\s+src="([^"]+)"[^>]*\scaption="([^"]*)"[^>]*>\}\}'
+        # 没有 src 的 figure 一般是代码示例占位，直接移除
+        if not src:
+            return ""
 
-    def replace_with_caption(match):
-        src = match.group(1)
-        caption = match.group(2)
-
-        # 移除开头的斜杠，添加 static 前缀
+        # 绝对路径资源转为相对 static 路径，便于 Pandoc 打包
         if src.startswith('/'):
             src = 'static' + src
 
-        # 返回 Markdown 图片语法
-        return f'![{caption}]({src})'
+        # 优先 caption，fallback 到 title，至少保证图片可渲染
+        alt = _escape_alt_text(attrs.get("caption") or attrs.get("title") or "")
+        return f'![{alt}]({src})'
 
-    text = re.sub(pattern_with_caption, replace_with_caption, text)
+    text = FIGURE_SHORTCODE_RE.sub(replace_figure_shortcode, text)
 
-    # 再处理没有 caption 的 figure shortcode
-    pattern_without_caption = r'\{\{< figure\s+src="([^"]+)"[^>]*>\}\}'
-
-    def replace_without_caption(match):
-        src = match.group(1)
-
-        if src.startswith('/'):
-            src = 'static' + src
-
-        return f'[]({src})'
-
-    text = re.sub(pattern_without_caption, replace_without_caption, text)
-
-    # 移除完全没有 src 属性的 figure shortcode（例如用于代码块的）
-    pattern_no_src = r'\{\{< figure[^>]*>\}\}'
-    text = re.sub(pattern_no_src, '', text)
+    # 把 Markdown 里的绝对路径图片 ![](/map/ch01.png) 转为 static/map/ch01.png
+    text = ABS_IMAGE_RE.sub(r'![\1](static/\2)', text)
 
     return text
 
@@ -71,7 +68,7 @@ def process_file(input_path, output_path):
         content = f.read()
 
     # 转换内容
-    converted_content = convert_figure_shortcode(content)
+    converted_content = convert_markdown(content)
 
     # 写入输出文件
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -99,7 +96,7 @@ def main():
         input_dir = Path(input_path)
 
         # 获取所有 .md 文件
-        md_files = list(input_dir.glob('*.md'))
+        md_files = sorted(input_dir.glob('*.md'))
 
         for md_file in md_files:
             output_file = os.path.join(output_dir, md_file.name)
